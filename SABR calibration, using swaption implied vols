@@ -1,0 +1,79 @@
+import numpy as np
+import scipy.optimize as opt
+
+
+# The below function computes the asymptotic normal volatility based on the SABR model parameters, as per Hagan et al 2002.
+# The asymptotic normal volatility under the SABR model refers to the implied volatility as approximated 
+# for small values of the volatility of volatility parameter (α) and small time-to-maturity (T). 
+# This approximation allows us to convert the SABR model dynamics into an implied volatility under the Black model.
+# The term "asymptotic" refers to an approximation that becomes increasingly accurate as the
+# volatility of volatility (α) becomes small or the time-to-maturity T approaches a limit.
+
+
+def asymptotic_normal_vol(T, K, F0, sigma0, alpha, beta, rho):
+    Fmid = (F0 + K) / 2
+    zeta = alpha / (sigma0 * (1 - beta)) * (F0 ** (1 - beta) - K ** (1 - beta))
+    eps = T * alpha ** 2
+    delta = np.log((np.sqrt(1 - 2 * rho * zeta + zeta ** 2) + zeta - rho) / (1 - rho))
+    gamma1 = beta / Fmid
+    gamma2 = beta * (beta - 1) / Fmid ** 2
+
+    parta = alpha * (F0 - K) / delta
+    partb1 = (2 * gamma2 - gamma1 ** 2) / 24 * (sigma0 * Fmid ** beta / alpha) ** 2
+    partb2 = rho * gamma1 / 4 * sigma0 * Fmid ** beta / alpha
+    partb3 = (2 - 3 * rho ** 2) / 24
+    partb = (1 + (partb1 + partb2 + partb3) * eps)
+
+    return parta * partb
+
+# A separate set of model parameters are calibrated for each expiry, so one set of parameters won't capture the term structure of all maturities.
+# The β parameter is fixed and the remaining parameters (alpa, sigma0, rho) are optimized.
+
+# The below function receives the current guess of SABR parameters, as well as the rest of parameters: expiry, strike list, forward rate, and market volatilities.
+# It initializes the MSE (mean square error) to zero.
+# A loop iterates over each strike in K_list, because we calculate a different set of SABR parameters for each maturity.
+# The square of the difference between the SABR implied vols and the market implied vols (the Black model implied vol for swaptions),
+# is calculated on each iteration (for the current set of parameters). This quantity is the error to be minimised.
+
+def rootfind_helper(sabr_params, T, K_list, F0, sigma_list):
+    sigma0, alpha, rho = sabr_params
+    beta = 0.5
+    MSE = 0
+
+    for i in range(len(K_list)):
+        diff = asymptotic_normal_vol(T, K_list[i], F0, sigma0, alpha, beta, rho) - sigma_list[i]
+        MSE += diff ** 2
+    
+    return MSE
+
+
+
+# In the below function the scipy.optimize.minimize function is called to minimize the mean square error of rootfind_helper.
+# An initial guess for sigma0, alpha, rho is provided to the optimiser. 
+# The minimize function calls rootfind_helper with the current guess of parameters and market data for each of the expiries.
+# The optimized parameters (sigma0, alpha, rho) are stored in the params array.
+# The use of lists and indices is because we calculate a different set of SABR parameters for each maturity.
+
+def calibrate_sabr(T_list, K_table, F0_list, sigma_table):
+    init_guess = [0.1, 0.1, -0.1]        # An initial guess for the parameters is set (init_guess).
+    params = np.zeros((len(T_list), 3))  # An array params is initialized to store the calibrated parameters for each expiry, 
+                                         # having the same number of rows as our data, and 3 columns,
+                                         # which corresponds to the parameters that will be optimised.
+
+    for T,i in enumerate(T_list):
+        opt_result = opt.minimize(rootfind_helper, init_guess, args=(T, K_table[i], F0_list[i], sigma_table[i]), 
+                                  method='SLSQP', bounds=((0.01, 1.5), (0, 1.5), (-1, 1))) # An initial guess for sigma0, alpha, rho is provided to the optimiser. 
+        params[i] = opt_result.x
+
+    return params
+
+# Example usage:
+# Define the market data
+T_list = [1, 2, 3]  # Expiries
+K_table = [[0.01, 0.02, 0.03], [0.015, 0.025, 0.035], [0.02, 0.03, 0.04]]  # Strikes for each expiry
+F0_list = [0.015, 0.02, 0.025]  # Initial forward rates
+sigma_table = [[0.2, 0.19, 0.18], [0.18, 0.17, 0.16], [0.16, 0.15, 0.14]]  # Market volatilities for each expiry and strike (there is volatility skew) 
+
+# Calibrate SABR parameters
+calibrated_params = calibrate_sabr(T_list, K_table, F0_list, sigma_table)
+print("Calibrated SABR parameters for each expiry:", calibrated_params)
